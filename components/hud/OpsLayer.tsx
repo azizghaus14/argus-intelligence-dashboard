@@ -41,8 +41,8 @@ export default function OpsLayer() {
         </div>
       </div>
 
-      {/* Bottom — uniform module dock */}
-      <div className="pointer-events-none absolute inset-x-4 bottom-[54px] z-30 h-[224px]">
+      {/* Bottom — module dock (swipeable on mobile, fills the row on desktop) */}
+      <div className="pointer-events-none absolute inset-x-2 bottom-[44px] z-30 h-[210px] sm:inset-x-4 sm:bottom-[54px] sm:h-[224px]">
         <div className="pointer-events-auto h-full">
           <BottomDock />
         </div>

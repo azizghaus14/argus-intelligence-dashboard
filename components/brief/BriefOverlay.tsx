@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
 import {
   X,
@@ -66,7 +66,9 @@ export default function BriefOverlay() {
   const fc = useForecast();
   const sent = fc.sentiment;
   const summary = summarize(anomalies);
-  const ai = useAiBrief(briefOpen);
+  // Prefetch on load (not just on open) so the brief is already in hand — and
+  // because the cron pre-generates it daily, this is just a fast cache read.
+  const ai = useAiBrief(true);
   const aiBrief = ai.data?.available ? ai.data.brief : null;
   const aiLoading = briefOpen && !ai.data && !ai.error;
 
@@ -94,6 +96,12 @@ export default function BriefOverlay() {
 
   const topAnoms = anomalies.slice(0, 6);
 
+  // Time-derived content (timestamps, timeAgo) differs between SSR and client,
+  // so render this overlay only after mount. It's hidden by default — no SSR needed.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
+
   return (
     <div
       className={cn(
@@ -105,13 +113,13 @@ export default function BriefOverlay() {
 
       <button
         onClick={() => setBriefOpen(false)}
-        className="glass-chip absolute right-5 top-16 z-10 flex items-center gap-1.5 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-text-secondary transition hover:text-white"
+        className="glass-chip absolute right-3 top-14 z-10 flex items-center gap-1.5 px-3 py-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-text-secondary transition hover:text-white sm:right-5 sm:top-16"
       >
         <X className="h-3.5 w-3.5" /> Close
       </button>
 
       <div className="hud-scroll absolute inset-0 overflow-y-auto">
-        <div className="mx-auto max-w-6xl px-6 pb-16 pt-[72px]">
+        <div className="mx-auto max-w-6xl px-3 pb-16 pt-[60px] sm:px-6 sm:pt-[72px]">
           {/* ── Masthead ── */}
           <div className="panel p-5">
             <div className="mb-3 flex items-end justify-between gap-4">

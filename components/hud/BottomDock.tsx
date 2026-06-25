@@ -30,7 +30,7 @@ function Module({
   children: React.ReactNode;
 }) {
   return (
-    <div className="panel flex h-full min-w-0 flex-1 flex-col">
+    <div className="panel flex h-full shrink-0 snap-start flex-col min-w-[82vw] sm:min-w-[46vw] md:min-w-[38vw] lg:min-w-0 lg:flex-1">
       <div className="flex items-center justify-between border-b border-white/[0.05] px-3 py-2">
         <span className="flex min-w-0 items-center gap-1.5 panel-title">
           {icon}
@@ -136,7 +136,7 @@ export default function BottomDock() {
   const news = (eventsQ.data?.data ?? []).slice(0, 10);
 
   return (
-    <div className="flex h-full gap-3">
+    <div className="hud-scroll-x flex h-full snap-x snap-mandatory gap-3 overflow-x-auto pb-1 lg:snap-none lg:overflow-x-visible">
       {/* Threat anomalies */}
       <Module
         title="Threat Anomalies"

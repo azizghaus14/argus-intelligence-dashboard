@@ -169,6 +169,7 @@ export default function CesiumGlobe() {
     let viewer: any = null;
     let handler: any = null;
     let onWheel: ((event: WheelEvent) => void) | null = null;
+    let onCameraMoveEnd: (() => void) | null = null;
     let onKeyDown: ((event: KeyboardEvent) => void) | null = null;
     let zoomAnimationFrame: number | null = null;
     let flightAnimationTimer: ReturnType<typeof setInterval> | null = null;
@@ -611,6 +612,20 @@ export default function CesiumGlobe() {
           scene.requestRender();
         };
         scene.canvas.addEventListener("wheel", onWheel, { passive: false });
+
+        // Mobile pinch-zoom uses Cesium's native PINCH (no wheel event), so keep
+        // the stylized↔satellite swap in sync with the camera height on every
+        // settled camera move — this makes touch zoom transition like the wheel.
+        onCameraMoveEnd = () => {
+          if (destroyed || viewer.isDestroyed()) return;
+          try {
+            applyGlobeMode(scene.camera.positionCartographic.height > SAT_THRESHOLD);
+          } catch {
+            /* tearing down */
+          }
+        };
+        scene.camera.moveEnd.addEventListener(onCameraMoveEnd);
+
         onKeyDown = (event) => {
           if (event.key === "Escape") releaseTargetLock();
         };
@@ -648,6 +663,7 @@ export default function CesiumGlobe() {
       try {
         if (viewer && !viewer.isDestroyed()) {
           if (onWheel) viewer.scene.canvas.removeEventListener("wheel", onWheel);
+          if (onCameraMoveEnd) viewer.scene.camera.moveEnd.removeEventListener(onCameraMoveEnd);
           if (onKeyDown) window.removeEventListener("keydown", onKeyDown);
           if (zoomAnimationFrame != null) cancelAnimationFrame(zoomAnimationFrame);
           if (flightAnimationTimer) clearInterval(flightAnimationTimer);

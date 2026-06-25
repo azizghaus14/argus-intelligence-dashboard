@@ -45,9 +45,10 @@ export default function OpsLayer() {
         </div>
       </div>
 
-      {/* Mobile/tablet — target readout appears as a top card only when locked */}
+      {/* Mobile/tablet — target readout as a compact, capped top card (scrolls if
+          long) so it never covers the tracked aircraft in the centre. */}
       {selection && (
-        <div className="pointer-events-auto absolute inset-x-2 top-[58px] z-40 animate-fade-in lg:hidden">
+        <div className="hud-scroll pointer-events-auto absolute inset-x-2 top-[56px] z-40 max-h-[38vh] animate-fade-in overflow-y-auto rounded-2xl lg:hidden">
           <DetailPanel />
         </div>
       )}

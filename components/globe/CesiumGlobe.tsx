@@ -258,6 +258,19 @@ export default function CesiumGlobe() {
           /* older Cesium */
         }
 
+        // Fast imagery streaming: many parallel requests per host, a big tile
+        // cache, and preloading neighbours/ancestors so zoom feels instant and
+        // tiles refine to full resolution quickly.
+        try {
+          Cesium.RequestScheduler.maximumRequestsPerServer = 18;
+          Cesium.RequestScheduler.maximumRequests = 64;
+          scene.globe.tileCacheSize = 1200;
+          scene.globe.preloadSiblings = true;
+          scene.globe.preloadAncestors = true;
+        } catch {
+          /* noop */
+        }
+
         // Subtle bloom — enough to make markers/limb glow, without blowing out
         // sunlit Google tiles. HDR off (it over-brightens daytime photoreal).
         scene.highDynamicRange = false;
@@ -315,7 +328,10 @@ export default function CesiumGlobe() {
           try {
             viewer.imageryLayers.addImageryProvider(
               new Cesium.UrlTemplateImageryProvider({
-                url: "https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&hl=en",
+                // Rotate across Google's 4 tile subdomains (mt0–mt3) so tiles
+                // download in parallel instead of queueing on one host.
+                url: "https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&hl=en",
+                subdomains: ["0", "1", "2", "3"],
                 maximumLevel: 20,
                 credit: "Map data © Google",
               })
@@ -361,11 +377,9 @@ export default function CesiumGlobe() {
             scene.globe.baseColor = Cesium.Color.fromCssColorString("#040d28");
             scene.globe.enableLighting = false; // uniform digital look, no sun terminator
             scene.globe.showGroundAtmosphere = false;
-            // Strong, soft, blurred limb glow from Cesium's own atmosphere.
-            scene.skyAtmosphere.atmosphereLightIntensity = 26.0;
-            scene.skyAtmosphere.brightnessShift = 0.04;
-            scene.skyAtmosphere.saturationShift = 0.28;
-            scene.skyAtmosphere.hueShift = -0.03; // mostly blue, faint teal tint
+            // No sky atmosphere in the stylized view — it draws a bright limb
+            // ring that reads as an outline around the globe. Keep space clean.
+            scene.skyAtmosphere.show = false;
             // No bloom — borders stay thin, crisp, and glow-free (cleaner look,
             // and cheaper). The soft atmosphere limb comes from skyAtmosphere.
             try {
@@ -380,6 +394,7 @@ export default function CesiumGlobe() {
             gfxRef.current.stylized?.setShow(false);
             scene.globe.enableLighting = true;
             scene.globe.showGroundAtmosphere = true;
+            scene.skyAtmosphere.show = true;
             scene.skyAtmosphere.atmosphereLightIntensity = 18.0;
             scene.skyAtmosphere.brightnessShift = 0.06;
             scene.skyAtmosphere.saturationShift = 0.16;

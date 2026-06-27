@@ -37,10 +37,11 @@ export default function GlobeStage() {
         className="pointer-events-none absolute inset-0 transition-opacity duration-700"
         style={{
           opacity: stylized ? 1 : 0,
-          // Blue surrounding glow (faint teal tint), smooth falloff — centred
-          // low to wrap the oblique globe and bleed into the space around it.
+          // Very faint ambient blue lift around the planet — soft enough that it
+          // never reads as a ring/outline at the globe's edge, just keeps the
+          // surrounding space from being dead black.
           background:
-            "radial-gradient(circle 72vh at 50% 56%, rgba(60,132,232,0.58) 28%, rgba(40,96,180,0.28) 56%, rgba(24,60,118,0.10) 80%, transparent 100%)",
+            "radial-gradient(circle 82vh at 50% 56%, rgba(46,100,184,0.22) 24%, rgba(30,72,144,0.11) 54%, rgba(18,46,96,0.04) 80%, transparent 100%)",
         }}
       />
 

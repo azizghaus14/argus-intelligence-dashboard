@@ -16,7 +16,7 @@ export interface StylizedHandles {
 
 export function buildStylizedGlobe(C: any, scene: any, viewer: any): StylizedHandles {
   let shown = true;
-  const BORDER = C.Color.fromCssColorString("#5cc0ff"); // crisp blue, faint teal
+  const BORDER = C.Color.fromCssColorString("#2f5b80").withAlpha(0.8); // darker, subtle blue
 
   // ── Ocean: a subtle, camera-locked centre-lit dark navy (cheap fragment shader)
   const oceanMaterial = new C.Material({
@@ -96,7 +96,7 @@ export function buildStylizedGlobe(C: any, scene: any, viewer: any): StylizedHan
                 new C.GeometryInstance({
                   geometry: new C.PolylineGeometry({
                     positions: C.Cartesian3.fromDegreesArrayHeights(flat),
-                    width: 1.0,
+                    width: 0.7,
                     arcType: C.ArcType.GEODESIC,
                     vertexFormat: C.PolylineColorAppearance.VERTEX_FORMAT,
                   }),

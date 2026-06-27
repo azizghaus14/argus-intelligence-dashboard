@@ -37,7 +37,7 @@ export function buildStylizedGlobe(C: any, scene: any, viewer: any): StylizedHan
 
   // ── Land: flat, slightly lifted navy fill (one batched primitive)
   const landMaterial = C.Material.fromType("Color", {
-    color: C.Color.fromCssColorString("#0d2748"),
+    color: C.Color.fromCssColorString("#070f1e"),
   });
   const land: any[] = [];
   const labels = scene.primitives.add(new C.LabelCollection());
@@ -121,17 +121,22 @@ export function buildStylizedGlobe(C: any, scene: any, viewer: any): StylizedHan
         }
         if (name && Number.isFinite(lon) && Number.isFinite(lat)) {
           labels.add({
-            position: C.Cartesian3.fromDegrees(lon, lat, 30_000),
+            position: C.Cartesian3.fromDegrees(lon, lat, 25_000),
+            // Pull the label toward the camera in eye space so it always sits IN
+            // FRONT of the curved surface — it never clips into / sinks behind
+            // the globe near the limb — while depth-testing still hides the
+            // labels on the far side of the globe.
+            eyeOffset: new C.Cartesian3(0, 0, -64_000),
             text: String(name).toUpperCase(),
             font: "600 12px Inter, system-ui, sans-serif",
-            fillColor: C.Color.fromCssColorString("#dceaff").withAlpha(0.92),
-            outlineColor: C.Color.fromCssColorString("#04101f").withAlpha(0.9),
+            fillColor: C.Color.fromCssColorString("#cfe2f7").withAlpha(0.9),
+            outlineColor: C.Color.fromCssColorString("#02080f").withAlpha(0.95),
             outlineWidth: 2.5,
             style: C.LabelStyle.FILL_AND_OUTLINE,
             horizontalOrigin: C.HorizontalOrigin.CENTER,
             verticalOrigin: C.VerticalOrigin.CENTER,
             scaleByDistance: new C.NearFarScalar(2.0e6, 1.05, 3.0e7, 0.5),
-            translucencyByDistance: new C.NearFarScalar(2.5e6, 1.0, 3.2e7, 0.18),
+            translucencyByDistance: new C.NearFarScalar(2.5e6, 1.0, 3.2e7, 0.2),
             show: shown,
           });
         }
@@ -162,32 +167,10 @@ export function buildStylizedGlobe(C: any, scene: any, viewer: any): StylizedHan
     })
     .catch(() => {});
 
-  // ── Soft atmosphere: two static fresnel shells (no per-frame cost)
-  const shellMat = (power: number, lo: string, hi: string, mul: number, alpha: number) =>
-    new C.Material({
-      fabric: {
-        source: `
-          czm_material czm_getMaterial(czm_materialInput materialInput) {
-            czm_material m = czm_getDefaultMaterial(materialInput);
-            vec3 n = normalize(materialInput.normalEC);
-            vec3 e = normalize(materialInput.positionToEyeEC);
-            float f = pow(1.0 - clamp(abs(dot(n, e)), 0.0, 1.0), ${power.toFixed(2)});
-            vec3 glow = mix(${lo}, ${hi}, f);
-            m.diffuse = glow; m.emission = glow * ${mul.toFixed(2)}; m.alpha = f * ${alpha.toFixed(3)};
-            return m;
-          }`,
-      },
-      translucent: true,
-    });
-  const radii = C.Ellipsoid.WGS84.radii;
-  const mkShell = (scale: number, mat: any, depth: boolean) =>
-    scene.primitives.add(
-      new C.EllipsoidPrimitive({ radii: new C.Cartesian3(radii.x * scale, radii.y * scale, radii.z * scale), material: mat, depthTestEnabled: depth, show: shown })
-    );
-  const atmosphere = [
-    mkShell(1.16, shellMat(1.0, "vec3(0.04,0.10,0.24)", "vec3(0.18,0.40,0.82)", 1.0, 0.07), false),
-    mkShell(1.045, shellMat(0.9, "vec3(0.06,0.22,0.38)", "vec3(0.36,0.68,1.0)", 0.8, 0.05), true),
-  ];
+  // No ellipsoid atmosphere shells — they read as hard "circles" ringing the
+  // globe. The soft limb glow now comes purely from Cesium's skyAtmosphere
+  // (configured in CesiumGlobe) plus the screen-space halo behind the canvas.
+  const atmosphere: any[] = [];
 
   // ── Particle starfield (instanced points)
   const stars = scene.primitives.add(new C.PointPrimitiveCollection());

@@ -306,31 +306,20 @@ export default function CesiumGlobe() {
         viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); // unlock for free rotation / spin
         viewer.camera.moveDown(2.2e6); // nudge the globe up in the frame
 
-        // Imagery / 3D tiles. Photorealistic Google tiles when a key is present;
-        // otherwise keyless Esri World Imagery (satellite) — no Ion dependency.
+        // Satellite imagery = Google Hybrid map tiles (lyrs=y): real Google
+        // satellite imagery WITH Google's own high-quality labels baked in —
+        // place names, roads, borders. One fast layer off Google's CDN (much
+        // sharper + faster than stacking Esri reference layers). Only visible in
+        // satellite mode (the stylized overview overrides the globe material).
         (async () => {
           try {
-            // Fully-labelled "Google Maps"-style hybrid satellite map (keyless):
-            // Esri World Imagery base + transparent reference overlays that add
-            // every place name, country/admin boundary, and road. These only
-            // show in satellite mode — the stylized overview overrides the globe
-            // material, hiding imagery entirely.
-            const layers = viewer.imageryLayers;
-            const addLayer = async (url: string) =>
-              layers.addImageryProvider(
-                await Cesium.ArcGisMapServerImageryProvider.fromUrl(url)
-              );
-            await addLayer(
-              "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer"
+            viewer.imageryLayers.addImageryProvider(
+              new Cesium.UrlTemplateImageryProvider({
+                url: "https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&hl=en",
+                maximumLevel: 20,
+                credit: "Map data © Google",
+              })
             );
-            const placesLayer = await addLayer(
-              "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer"
-            );
-            const roadsLayer = await addLayer(
-              "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer"
-            );
-            placesLayer.brightness = 1.15; // make labels read over imagery
-            roadsLayer.alpha = 0.85;
             scene.requestRender();
           } catch (err) {
             try {

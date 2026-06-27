@@ -268,6 +268,9 @@ export default function CesiumGlobe() {
           scene.globe.tileCacheSize = 1200;
           scene.globe.preloadSiblings = true;
           scene.globe.preloadAncestors = true;
+          // Pull in higher-detail tiles so Google's labels/streets read sharper
+          // (default 2). Lower = crisper, slightly more tiles.
+          scene.globe.maximumScreenSpaceError = 1.5;
         } catch {
           /* noop */
         }
@@ -297,10 +300,12 @@ export default function CesiumGlobe() {
         ctrl.enableLook = true;
         ctrl.enableTranslate = true;
         ctrl.enableZoom = true;
-        ctrl.inertiaSpin = 0.85;
-        ctrl.inertiaTranslate = 0.85;
-        ctrl.inertiaZoom = 0.65;
-        ctrl.maximumMovementRatio = 0.06;
+        // Snappier, more sensitive drag/pan (was throttled): bigger per-frame
+        // movement + a touch more glide so moving around the map feels fast.
+        ctrl.inertiaSpin = 0.9;
+        ctrl.inertiaTranslate = 0.9;
+        ctrl.inertiaZoom = 0.7;
+        ctrl.maximumMovementRatio = 0.3;
         // Wheel zoom is handled below so zooming out always resolves to the
         // same centered world view. Keep native pinch for touch devices.
         ctrl.zoomEventTypes = [Cesium.CameraEventType.PINCH];
@@ -320,18 +325,17 @@ export default function CesiumGlobe() {
         viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); // unlock for free rotation / spin
         viewer.camera.moveDown(2.2e6); // nudge the globe up in the frame
 
-        // Satellite imagery = Google SATELLITE tiles only (lyrs=s, NO baked
-        // labels). The baked raster labels were pixelated at high-DPI; we render
-        // our own crisp vector place labels instead (see buildStylizedGlobe).
+        // Satellite imagery = Google HYBRID tiles (lyrs=y): full Google map —
+        // satellite imagery WITH every street, road, and place label baked in.
         // Rotated across Google's 4 subdomains (mt0–mt3) for parallel downloads.
         (async () => {
           try {
             viewer.imageryLayers.addImageryProvider(
               new Cesium.UrlTemplateImageryProvider({
-                url: "https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+                url: "https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&hl=en",
                 subdomains: ["0", "1", "2", "3"],
                 maximumLevel: 20,
-                credit: "Imagery © Google",
+                credit: "Map data © Google",
               })
             );
             scene.requestRender();
@@ -549,17 +553,10 @@ export default function CesiumGlobe() {
         // accumulate into one fluid motion instead of discrete jumps.
         let zoomTargetH: number | null = null;
 
-        const recenterHome = () => {
-          // When fully zoomed out, settle to a centred full-globe view (keep the
-          // current longitude so the planet doesn't spin sideways).
-          const cam = scene.camera;
-          const lon = Cesium.Math.toDegrees(cam.positionCartographic.longitude);
-          cam.flyTo({
-            destination: Cesium.Cartesian3.fromDegrees(lon, 12, HOME_VIEW.height),
-            orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
-            duration: 0.9,
-          });
-        };
+        // Above this altitude, zooming out gradually tilts the camera toward a
+        // centred top-down view — more top-down the higher you go — so the globe
+        // drifts to the centre *naturally* as you scroll out (no end snap).
+        const RECENTER_START = 6.0e6;
 
         onWheel = (event) => {
           event.preventDefault();
@@ -585,17 +582,41 @@ export default function CesiumGlobe() {
           const cam = scene.camera;
           const h = cam.positionCartographic.height;
           const diff = zoomTargetH - h;
-          if (Math.abs(diff) < Math.max(2500, h * 0.004)) {
-            const finalH = zoomTargetH;
-            zoomTargetH = null;
-            applyGlobeMode(finalH > SAT_THRESHOLD);
-            if (finalH > HOME_VIEW.height * 0.9) recenterHome(); // centre when fully out
-            return;
+          const heightDone = Math.abs(diff) < Math.max(2500, h * 0.004);
+          const newH = heightDone ? zoomTargetH : h + diff * 0.24;
+          const recentering = diff > 0 && newH > RECENTER_START;
+
+          let poseSettled = true;
+          if (recentering) {
+            // Glide straight up + tilt toward top-down, scaled by altitude.
+            // Recomputed from the live pose each frame, so it's smooth (no jump).
+            const carto = cam.positionCartographic;
+            const t = clamp01((newH - RECENTER_START) / (HOME_VIEW.height - RECENTER_START));
+            const proportional = Cesium.Math.lerp(
+              Cesium.Math.toRadians(-32),
+              Cesium.Math.toRadians(-90),
+              t
+            );
+            // Only ever tilt TOWARD top-down (never away) so there's no wobble if
+            // you start from a steep angle.
+            const targetPitch = Math.min(proportional, cam.pitch);
+            const newPitch = Cesium.Math.lerp(cam.pitch, targetPitch, 0.18);
+            poseSettled = Math.abs(newPitch - targetPitch) < 0.01;
+            cam.setView({
+              destination: Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, newH),
+              orientation: {
+                heading: cam.heading,
+                pitch: newPitch,
+                roll: Cesium.Math.lerp(cam.roll, 0, 0.25),
+              },
+            });
+          } else {
+            const stepH = newH - h;
+            if (stepH < 0) cam.zoomIn(-stepH);
+            else cam.zoomOut(stepH);
           }
-          const stepH = diff * 0.22; // smooth easing toward the target
-          if (stepH < 0) cam.zoomIn(-stepH);
-          else cam.zoomOut(stepH);
-          applyGlobeMode(h + stepH > SAT_THRESHOLD);
+          applyGlobeMode(newH > SAT_THRESHOLD);
+          if (heightDone && poseSettled) zoomTargetH = null;
           scene.requestRender();
         };
         scene.preUpdate.addEventListener(onZoomTick);

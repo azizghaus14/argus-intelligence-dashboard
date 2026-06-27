@@ -9,7 +9,6 @@ import { useUIStore } from "@/lib/store/uiStore";
 import { timeAgo } from "@/lib/utils/format";
 import type { Flight, Quake } from "@/lib/types";
 
-const GOOGLE_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 const ION_TOKEN = process.env.NEXT_PUBLIC_CESIUM_ION_TOKEN;
 const BASE = { lat: 3.14, lng: 101.69 }; // analyst base — Kuala Lumpur
 
@@ -311,27 +310,28 @@ export default function CesiumGlobe() {
         // otherwise keyless Esri World Imagery (satellite) — no Ion dependency.
         (async () => {
           try {
-            if (GOOGLE_KEY) {
-              Cesium.GoogleMaps.defaultApiKey = GOOGLE_KEY;
-              const tileset = await Cesium.createGooglePhotorealistic3DTileset();
-              tileset.maximumScreenSpaceError = 16; // default; refines on zoom. Lower = heavier.
-              tileset.preloadWhenHidden = true;
-              tileset.preloadFlightDestinations = true;
-              tileset.foveatedTimeDelay = 0;
-              tileset.tileLoad.addEventListener(() => {
-                if (!viewer.isDestroyed()) scene.requestRender();
-              });
-              scene.primitives.add(tileset);
-              gfxRef.current.tileset = tileset;
-              // Visible only in satellite (zoomed-in) mode; stylized mode hides it.
-              tileset.show = gfxRef.current.stylizedMode === false;
-              scene.requestRender();
-            } else {
-              const esri = await Cesium.ArcGisMapServerImageryProvider.fromUrl(
-                "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer"
+            // Fully-labelled "Google Maps"-style hybrid satellite map (keyless):
+            // Esri World Imagery base + transparent reference overlays that add
+            // every place name, country/admin boundary, and road. These only
+            // show in satellite mode — the stylized overview overrides the globe
+            // material, hiding imagery entirely.
+            const layers = viewer.imageryLayers;
+            const addLayer = async (url: string) =>
+              layers.addImageryProvider(
+                await Cesium.ArcGisMapServerImageryProvider.fromUrl(url)
               );
-              viewer.imageryLayers.addImageryProvider(esri);
-            }
+            await addLayer(
+              "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer"
+            );
+            const placesLayer = await addLayer(
+              "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer"
+            );
+            const roadsLayer = await addLayer(
+              "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer"
+            );
+            placesLayer.brightness = 1.15; // make labels read over imagery
+            roadsLayer.alpha = 0.85;
+            scene.requestRender();
           } catch (err) {
             try {
               viewer.imageryLayers.addImageryProvider(
@@ -377,17 +377,10 @@ export default function CesiumGlobe() {
             scene.skyAtmosphere.brightnessShift = 0.04;
             scene.skyAtmosphere.saturationShift = 0.28;
             scene.skyAtmosphere.hueShift = -0.03; // mostly blue, faint teal tint
-            // Gentle bloom blurs the limb + borders into a soft glow (the key
-            // to a soft halo instead of a hard ellipsoid silhouette).
+            // No bloom — borders stay thin, crisp, and glow-free (cleaner look,
+            // and cheaper). The soft atmosphere limb comes from skyAtmosphere.
             try {
-              const bloom = scene.postProcessStages.bloom;
-              bloom.enabled = true;
-              bloom.uniforms.glowOnly = false;
-              bloom.uniforms.contrast = 118;
-              bloom.uniforms.brightness = -0.18;
-              bloom.uniforms.delta = 1.5;
-              bloom.uniforms.sigma = 4.5;
-              bloom.uniforms.stepSize = 1.0;
+              scene.postProcessStages.bloom.enabled = false;
             } catch {
               /* bloom optional */
             }
@@ -435,57 +428,10 @@ export default function CesiumGlobe() {
           scene.requestRender();
         };
 
-        // ── Zoom-out auto-centring (deterministic, height-based) ────────────
-        // Below BLEND_START the camera is fully free. Above it, the pose blends
-        // toward the centred HOME view purely as a function of the current
-        // height — so zooming out from ANYWHERE smoothly resolves to the same
-        // Earth-centred position, exactly tracked to the scroll. No state machine.
-        const BLEND_START = 3.0e6;
-        const blendAnchorRef = { current: null as null | {
-          lng: number; lat: number; heading: number; pitch: number; roll: number;
-        } };
-
-        const clamp01 = (x: number) => (x < 0 ? 0 : x > 1 ? 1 : x);
-        const blendT = (h: number) =>
-          smoothstep(
-            clamp01(
-              (Math.log(h) - Math.log(BLEND_START)) /
-                (Math.log(HOME_VIEW.height) - Math.log(BLEND_START))
-            )
-          );
-
-        const capturePose = () => {
-          const p = scene.camera.positionCartographic;
-          return {
-            lng: Cesium.Math.toDegrees(p.longitude),
-            lat: Cesium.Math.toDegrees(p.latitude),
-            heading: scene.camera.heading,
-            pitch: scene.camera.pitch,
-            roll: scene.camera.roll,
-          };
-        };
-
-        const applyCenterBlend = (height: number) => {
-          const a = blendAnchorRef.current;
-          if (!a || viewer.isDestroyed()) return;
-          const t = blendT(height);
-          // Preserve heading and roll throughout the zoom-out. Interpolating
-          // either angle here makes the whole Earth visibly spin under the UI.
-          scene.camera.setView({
-            destination: Cesium.Cartesian3.fromDegrees(a.lng, a.lat, height),
-            orientation: {
-              heading: a.heading,
-              pitch: a.pitch + (-Math.PI / 2 - a.pitch) * t,
-              roll: a.roll,
-            },
-          });
-          scene.requestRender();
-        };
-
-        // LEFT_DOWN clears the anchor so the next zoom re-captures the free pose.
-        const resetHomeTransition = () => {
-          blendAnchorRef.current = null;
-        };
+        // Zoom is now pure relative zoom (see onWheel) — no auto-centring blend,
+        // which was the source of the zoom-out stutter/jump. Kept as a no-op so
+        // existing call sites stay valid.
+        const resetHomeTransition = () => {};
 
         const focusFlight = (flightId: string) => {
           const ent = flightEntitiesRef.current.get(flightId);
@@ -611,17 +557,11 @@ export default function CesiumGlobe() {
             Math.max(120, zoomingOut ? h * (1 + frac) : h * (1 - frac))
           );
 
-          if (newH > BLEND_START) {
-            // Blend zone: pose is a pure function of height → converges to centred HOME.
-            if (!blendAnchorRef.current) blendAnchorRef.current = capturePose();
-            applyCenterBlend(newH);
-          } else {
-            // Free zone: relative zoom preserves the user's orientation & is terrain-safe.
-            blendAnchorRef.current = null;
-            const amount = Math.abs(h - newH);
-            if (zoomingOut) cam.zoomOut(amount);
-            else cam.zoomIn(amount);
-          }
+          // Pure relative zoom in BOTH directions — preserves orientation and
+          // stays perfectly smooth (no setView recentre, which caused the jump).
+          const amount = Math.abs(h - newH);
+          if (zoomingOut) cam.zoomOut(amount);
+          else cam.zoomIn(amount);
           // Switch between the stylized overview and the satellite view by zoom.
           applyGlobeMode(newH > SAT_THRESHOLD);
           scene.requestRender();

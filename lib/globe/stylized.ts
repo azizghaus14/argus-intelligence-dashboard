@@ -96,7 +96,7 @@ export function buildStylizedGlobe(C: any, scene: any, viewer: any): StylizedHan
                 new C.GeometryInstance({
                   geometry: new C.PolylineGeometry({
                     positions: C.Cartesian3.fromDegreesArrayHeights(flat),
-                    width: 1.6,
+                    width: 1.0,
                     arcType: C.ArcType.GEODESIC,
                     vertexFormat: C.PolylineColorAppearance.VERTEX_FORMAT,
                   }),

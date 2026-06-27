@@ -244,6 +244,21 @@ export default function CesiumGlobe() {
           /* older Cesium */
         }
 
+        // Render at the device's native pixel ratio (crisp retina) — NOT extra
+        // supersampling, which would over-render and tank FPS.
+        try {
+          viewer.useBrowserRecommendedResolution = false;
+          viewer.resolutionScale = 1.0;
+        } catch {
+          /* noop */
+        }
+        try {
+          scene.msaaSamples = 4; // smooth border/label edges
+          scene.postProcessStages.fxaa.enabled = true;
+        } catch {
+          /* older Cesium */
+        }
+
         // Subtle bloom — enough to make markers/limb glow, without blowing out
         // sunlit Google tiles. HDR off (it over-brightens daytime photoreal).
         scene.highDynamicRange = false;
@@ -369,9 +384,9 @@ export default function CesiumGlobe() {
               bloom.enabled = true;
               bloom.uniforms.glowOnly = false;
               bloom.uniforms.contrast = 118;
-              bloom.uniforms.brightness = -0.1;
-              bloom.uniforms.delta = 1.8;
-              bloom.uniforms.sigma = 8.5;
+              bloom.uniforms.brightness = -0.18;
+              bloom.uniforms.delta = 1.5;
+              bloom.uniforms.sigma = 4.5;
               bloom.uniforms.stepSize = 1.0;
             } catch {
               /* bloom optional */

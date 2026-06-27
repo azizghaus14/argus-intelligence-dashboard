@@ -168,6 +168,7 @@ export default function CesiumGlobe() {
     let viewer: any = null;
     let handler: any = null;
     let onWheel: ((event: WheelEvent) => void) | null = null;
+    let onZoomTick: (() => void) | null = null;
     let onCameraMoveEnd: (() => void) | null = null;
     let onKeyDown: ((event: KeyboardEvent) => void) | null = null;
     let zoomAnimationFrame: number | null = null;
@@ -319,21 +320,18 @@ export default function CesiumGlobe() {
         viewer.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); // unlock for free rotation / spin
         viewer.camera.moveDown(2.2e6); // nudge the globe up in the frame
 
-        // Satellite imagery = Google Hybrid map tiles (lyrs=y): real Google
-        // satellite imagery WITH Google's own high-quality labels baked in —
-        // place names, roads, borders. One fast layer off Google's CDN (much
-        // sharper + faster than stacking Esri reference layers). Only visible in
-        // satellite mode (the stylized overview overrides the globe material).
+        // Satellite imagery = Google SATELLITE tiles only (lyrs=s, NO baked
+        // labels). The baked raster labels were pixelated at high-DPI; we render
+        // our own crisp vector place labels instead (see buildStylizedGlobe).
+        // Rotated across Google's 4 subdomains (mt0–mt3) for parallel downloads.
         (async () => {
           try {
             viewer.imageryLayers.addImageryProvider(
               new Cesium.UrlTemplateImageryProvider({
-                // Rotate across Google's 4 tile subdomains (mt0–mt3) so tiles
-                // download in parallel instead of queueing on one host.
-                url: "https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&hl=en",
+                url: "https://mt{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
                 subdomains: ["0", "1", "2", "3"],
                 maximumLevel: 20,
-                credit: "Map data © Google",
+                credit: "Imagery © Google",
               })
             );
             scene.requestRender();
@@ -546,31 +544,61 @@ export default function CesiumGlobe() {
           Cesium.ScreenSpaceEventType.LEFT_DOWN
         );
 
+        // Smooth, fast, sensitive wheel zoom: each tick nudges a *target* height
+        // and an eased per-frame loop glides the camera toward it. Rapid ticks
+        // accumulate into one fluid motion instead of discrete jumps.
+        let zoomTargetH: number | null = null;
+
+        const recenterHome = () => {
+          // When fully zoomed out, settle to a centred full-globe view (keep the
+          // current longitude so the planet doesn't spin sideways).
+          const cam = scene.camera;
+          const lon = Cesium.Math.toDegrees(cam.positionCartographic.longitude);
+          cam.flyTo({
+            destination: Cesium.Cartesian3.fromDegrees(lon, 12, HOME_VIEW.height),
+            orientation: { heading: 0, pitch: Cesium.Math.toRadians(-90), roll: 0 },
+            duration: 0.9,
+          });
+        };
+
         onWheel = (event) => {
           event.preventDefault();
           rotateRef.current = false;
           viewer.camera.cancelFlight();
           const cam = scene.camera;
-          const h = cam.positionCartographic.height;
-          const frac = Math.min(0.2, Math.max(0.025, Math.abs(event.deltaY) * 0.0012));
+          const base = zoomTargetH ?? cam.positionCartographic.height;
           const zoomingOut = event.deltaY > 0;
           if (zoomingOut) releaseTargetLock();
-          // Target height driven directly by the scroll.
-          const newH = Math.min(
+          // Sensitivity scales with wheel delta; min step keeps it snappy.
+          const step = Math.min(0.5, Math.max(0.06, Math.abs(event.deltaY) * 0.0024));
+          zoomTargetH = Math.min(
             HOME_VIEW.height,
-            Math.max(120, zoomingOut ? h * (1 + frac) : h * (1 - frac))
+            Math.max(120, zoomingOut ? base * (1 + step) : base * (1 - step))
           );
-
-          // Pure relative zoom in BOTH directions — preserves orientation and
-          // stays perfectly smooth (no setView recentre, which caused the jump).
-          const amount = Math.abs(h - newH);
-          if (zoomingOut) cam.zoomOut(amount);
-          else cam.zoomIn(amount);
-          // Switch between the stylized overview and the satellite view by zoom.
-          applyGlobeMode(newH > SAT_THRESHOLD);
           scene.requestRender();
         };
         scene.canvas.addEventListener("wheel", onWheel, { passive: false });
+
+        // Eased zoom animator — runs only while a zoom target is pending.
+        onZoomTick = () => {
+          if (zoomTargetH == null || destroyed || viewer.isDestroyed()) return;
+          const cam = scene.camera;
+          const h = cam.positionCartographic.height;
+          const diff = zoomTargetH - h;
+          if (Math.abs(diff) < Math.max(2500, h * 0.004)) {
+            const finalH = zoomTargetH;
+            zoomTargetH = null;
+            applyGlobeMode(finalH > SAT_THRESHOLD);
+            if (finalH > HOME_VIEW.height * 0.9) recenterHome(); // centre when fully out
+            return;
+          }
+          const stepH = diff * 0.22; // smooth easing toward the target
+          if (stepH < 0) cam.zoomIn(-stepH);
+          else cam.zoomOut(stepH);
+          applyGlobeMode(h + stepH > SAT_THRESHOLD);
+          scene.requestRender();
+        };
+        scene.preUpdate.addEventListener(onZoomTick);
 
         // Mobile pinch-zoom uses Cesium's native PINCH (no wheel event), so keep
         // the stylized↔satellite swap in sync with the camera height on every
@@ -622,6 +650,7 @@ export default function CesiumGlobe() {
       try {
         if (viewer && !viewer.isDestroyed()) {
           if (onWheel) viewer.scene.canvas.removeEventListener("wheel", onWheel);
+          if (onZoomTick) viewer.scene.preUpdate.removeEventListener(onZoomTick);
           if (onCameraMoveEnd) viewer.scene.camera.moveEnd.removeEventListener(onCameraMoveEnd);
           if (onKeyDown) window.removeEventListener("keydown", onKeyDown);
           if (zoomAnimationFrame != null) cancelAnimationFrame(zoomAnimationFrame);

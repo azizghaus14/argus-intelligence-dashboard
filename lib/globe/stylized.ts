@@ -190,12 +190,66 @@ export function buildStylizedGlobe(C: any, scene: any, viewer: any): StylizedHan
     });
   }
 
+  // ── Crisp VECTOR place labels for the satellite view (our own font, never
+  // pixelated like the baked raster tile labels). Shown only in satellite mode
+  // and decluttered by importance: major cities appear from high up, smaller
+  // towns only when you zoom right in.
+  const cityLabels = scene.primitives.add(new C.LabelCollection());
+  // Camera→label distance at which a label switches on, by scalerank (0 = major
+  // world city … 10 = minor town). Lower rank → visible from higher altitude.
+  const FAR_BY_RANK = [1.7e6, 1.4e6, 1.15e6, 9.0e5, 7.0e5, 5.5e5, 4.3e5, 3.4e5, 2.7e5, 2.1e5, 1.7e5];
+  fetch("/cities.json")
+    .then((r) => r.json())
+    .then((rows: any[]) => {
+      if (viewer.isDestroyed()) return;
+      // Cap the number of labels — the file is sorted major-first, so this keeps
+      // the most important cities. Too many labels overflow Cesium's glyph
+      // billboard batching and crash the renderer.
+      let added = 0;
+      for (const row of rows) {
+        if (added >= 700) break;
+        const name = row[0];
+        const lon = row[1];
+        const lat = row[2];
+        const rank = row[3] | 0;
+        const cap = row[4];
+        if (!name || !Number.isFinite(lon) || !Number.isFinite(lat)) continue;
+        added++;
+        let far = FAR_BY_RANK[Math.max(0, Math.min(10, rank))];
+        if (cap) far = Math.max(far, 2.4e6); // capitals stay visible from higher up
+        // Simplest possible depth-tested label — NO eyeOffset, NO
+        // DistanceDisplayCondition, NO disableDepthTestDistance. Each of those
+        // fed an invalid near distance into Cesium's multi-frustum culling and
+        // crashed the renderer. Visibility is gated purely by a per-rank
+        // translucency fade (minor towns fade out beyond their `far` distance).
+        cityLabels.add({
+          position: C.Cartesian3.fromDegrees(lon, lat, 100),
+          text: String(name),
+          font: cap ? "600 13px Inter, system-ui, sans-serif" : "500 12px Inter, system-ui, sans-serif",
+          fillColor: C.Color.fromCssColorString("#ffffff"),
+          outlineColor: C.Color.fromCssColorString("#0a1018").withAlpha(0.95),
+          outlineWidth: 3,
+          style: C.LabelStyle.FILL_AND_OUTLINE,
+          horizontalOrigin: C.HorizontalOrigin.CENTER,
+          verticalOrigin: C.VerticalOrigin.CENTER,
+          scaleByDistance: new C.NearFarScalar(2.0e5, 1.0, 1.6e6, 0.55),
+          translucencyByDistance: new C.NearFarScalar(far * 0.7, 1.0, far, 0.0),
+          // Per-label show stays true; the COLLECTION's `.show` (toggled in
+          // setShow) gates satellite vs stylized. (Don't gate per-label on
+          // `shown` here — it races with the async fetch and left labels hidden.)
+        });
+      }
+      if (!viewer.isDestroyed()) scene.requestRender();
+    })
+    .catch(() => {});
+
   const setShow = (show: boolean) => {
     shown = show;
     for (const shell of atmosphere) shell.show = show;
     if (bordersPrim) bordersPrim.show = show;
     for (const p of land) p.show = show;
-    labels.show = show;
+    labels.show = show; // country labels — stylized overview
+    cityLabels.show = !show; // city labels — satellite view
     stars.show = show;
     scene.globe.material = show ? oceanMaterial : undefined;
   };
@@ -207,6 +261,7 @@ export function buildStylizedGlobe(C: any, scene: any, viewer: any): StylizedHan
       if (bordersPrim) scene.primitives.remove(bordersPrim);
       for (const p of land) scene.primitives.remove(p);
       scene.primitives.remove(labels);
+      scene.primitives.remove(cityLabels);
       scene.primitives.remove(stars);
     }
   };

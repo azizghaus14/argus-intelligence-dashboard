@@ -552,6 +552,10 @@ export default function CesiumGlobe() {
         // and an eased per-frame loop glides the camera toward it. Rapid ticks
         // accumulate into one fluid motion instead of discrete jumps.
         let zoomTargetH: number | null = null;
+        // Heading captured at the START of a zoom gesture and held fixed through
+        // the recenter — reading cam.heading every frame near top-down is what
+        // made the globe spin (heading is degenerate at a vertical view).
+        let zoomHeading = 0;
 
         // Above this altitude, zooming out gradually tilts the camera toward a
         // centred top-down view — more top-down the higher you go — so the globe
@@ -563,6 +567,7 @@ export default function CesiumGlobe() {
           rotateRef.current = false;
           viewer.camera.cancelFlight();
           const cam = scene.camera;
+          if (zoomTargetH == null) zoomHeading = cam.heading; // stable snapshot
           const base = zoomTargetH ?? cam.positionCartographic.height;
           const zoomingOut = event.deltaY > 0;
           if (zoomingOut) releaseTargetLock();
@@ -594,7 +599,7 @@ export default function CesiumGlobe() {
             const t = clamp01((newH - RECENTER_START) / (HOME_VIEW.height - RECENTER_START));
             const proportional = Cesium.Math.lerp(
               Cesium.Math.toRadians(-32),
-              Cesium.Math.toRadians(-90),
+              Cesium.Math.toRadians(-88), // stop just short of -90 (gimbal singularity)
               t
             );
             // Only ever tilt TOWARD top-down (never away) so there's no wobble if
@@ -605,9 +610,9 @@ export default function CesiumGlobe() {
             cam.setView({
               destination: Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, newH),
               orientation: {
-                heading: cam.heading,
+                heading: zoomHeading, // held fixed — never spins
                 pitch: newPitch,
-                roll: Cesium.Math.lerp(cam.roll, 0, 0.25),
+                roll: 0,
               },
             });
           } else {

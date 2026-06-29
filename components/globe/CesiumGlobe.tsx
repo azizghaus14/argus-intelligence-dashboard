@@ -80,6 +80,46 @@ function flightVisualAltitude(flight: Flight) {
   return Math.max(sourceAltitude + clearance, flight.onGround ? 1_800 : 2_600);
 }
 
+// Cap how many flights we RENDER and spread them evenly: bucket into a coarse
+// lat/lon grid and round-robin across cells, so dense regions (Europe/US) get
+// thinned instead of piling into a white blob, and sparse regions keep every
+// plane. Keeps the most recently-seen flight in each cell. `keepId` is always
+// retained (the tracked aircraft). Analytics still use the full unthinned feed.
+function thinFlightsForRender(flights: Flight[], maxN: number, keepId?: string | null): Flight[] {
+  if (flights.length <= maxN) return flights;
+  const cells = new Map<string, Flight[]>();
+  for (const f of flights) {
+    const key = `${Math.round(f.lat / 3)}:${Math.round(f.lng / 3)}`;
+    let bucket = cells.get(key);
+    if (!bucket) cells.set(key, (bucket = []));
+    bucket.push(f);
+  }
+  for (const bucket of cells.values()) {
+    bucket.sort((a, b) => (b.lastContact ?? 0) - (a.lastContact ?? 0));
+  }
+  const buckets = [...cells.values()];
+  const out: Flight[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; out.length < maxN; i++) {
+    let added = false;
+    for (const bucket of buckets) {
+      const f = bucket[i];
+      if (f) {
+        out.push(f);
+        seen.add(f.id);
+        added = true;
+        if (out.length >= maxN) break;
+      }
+    }
+    if (!added) break;
+  }
+  if (keepId && !seen.has(keepId)) {
+    const kept = flights.find((f) => f.id === keepId);
+    if (kept) out.push(kept);
+  }
+  return out;
+}
+
 function flightPositionAt(motion: FlightMotion, now: number) {
   const elapsedMs = Math.max(0, now - motion.blendStartedAt);
   const projectedSeconds = Math.min(180, elapsedMs / 1000);
@@ -145,6 +185,7 @@ export default function CesiumGlobe() {
   const dsRef = useRef<Record<string, any>>({});
   const flightEntitiesRef = useRef<Map<string, any>>(new Map());
   const flightMotionsRef = useRef<Map<string, FlightMotion>>(new Map());
+  const flightClearanceRef = useRef(0); // shared overview lift, updated once/frame
   const rotateRef = useRef(true);
   const followIdRef = useRef<string | null>(null); // icao24 of tracked flight
   const focusFlightRef = useRef<((id: string) => void) | null>(null);
@@ -655,12 +696,20 @@ export default function CesiumGlobe() {
           }
         });
 
-        // Request a modest animation cadence for moving aircraft while retaining
-        // Cesium's on-demand rendering for the rest of the scene.
+        // Animate moving aircraft while keeping the rest of the scene on-demand.
+        // Also refresh the shared overview lift once per tick (cheap — one camera
+        // read instead of one per flight per frame). Cadence is adaptive: a
+        // smooth ~20fps when zoomed in, but ~3fps when zoomed out where the
+        // planes are tiny dots and barely move — that's the big idle-cost saver.
+        let flightTick = 0;
         flightAnimationTimer = setInterval(() => {
-          if (!destroyed && !document.hidden && dsRef.current.flights?.show) {
-            scene.requestRender();
-          }
+          if (destroyed || document.hidden || viewer.isDestroyed()) return;
+          const h = scene.camera.positionCartographic.height;
+          flightClearanceRef.current = 45_000 * clamp01((h - 1.0e6) / 8.0e6);
+          if (!dsRef.current.flights?.show) return;
+          flightTick++;
+          const stride = h > 3.0e6 ? 6 : 1; // zoomed out → render every ~6th tick
+          if (flightTick % stride === 0) scene.requestRender();
         }, 50);
         // Swallow transient tile/render errors so they don't spam the console.
         scene.renderError.addEventListener(() => {});
@@ -777,7 +826,13 @@ export default function CesiumGlobe() {
     const color = (h: string, a = 1) => C.Color.fromCssColorString(h).withAlpha(a);
     const now = Date.now();
     const activeIds = new Set<string>();
-    for (const f of flights.data.data.slice(0, 15000)) {
+    // Render every flight (the feed is already capped server-side). The
+    // zoomed-out "white blob" is solved by shrinking icons to dots via
+    // scaleByDistance, NOT by dropping aircraft — so zooming into a busy hub
+    // still shows all of its traffic. thinFlightsForRender only kicks in as a
+    // safety valve if a future feed returns a huge global set.
+    const rendered = thinFlightsForRender(flights.data.data, 3000, followIdRef.current);
+    for (const f of rendered) {
       activeIds.add(f.id);
       const tracked = followIdRef.current === f.id;
       const trackColor = f.emergency
@@ -826,13 +881,12 @@ export default function CesiumGlobe() {
             const motion = flightMotionsRef.current.get(f.id);
             if (!motion) return undefined;
             const position = flightPositionAt(motion, Date.now());
-            const cameraHeight = viewerRef.current?.camera?.positionCartographic?.height ?? 0;
-            const overviewClearance =
-              45_000 * clamp01((cameraHeight - 1.0e6) / 8.0e6);
+            // overview lift is computed once per frame (flightClearanceRef),
+            // not re-read from the camera for every one of ~1400 flights.
             return C.Cartesian3.fromDegrees(
               position.lng,
               position.lat,
-              position.alt + overviewClearance
+              position.alt + flightClearanceRef.current
             );
           }, false),
           viewFrom: new C.Cartesian3(0, -1100, 620),
@@ -844,6 +898,10 @@ export default function CesiumGlobe() {
             rotation: C.Math.toRadians(-f.heading),
             alignedAxis: C.Cartesian3.ZERO,
             disableDepthTestDistance: FLIGHT_DEPTH_BYPASS_METRES,
+            // Full-size when zoomed in; shrink + dim into small dots when zoomed
+            // out so they read as a density field instead of a white blob.
+            scaleByDistance: new C.NearFarScalar(5.0e5, 1.0, 8.0e6, 0.18),
+            translucencyByDistance: new C.NearFarScalar(5.0e5, 1.0, 1.2e7, 0.45),
           },
           label: {
             show: tracked,
@@ -888,13 +946,13 @@ export default function CesiumGlobe() {
       };
     }
     for (const [id, entity] of flightEntitiesRef.current) {
+      if (activeIds.has(id) || followIdRef.current === id) continue;
+      entity.show = false; // thinned out this pass or gone — hide immediately
       const motion = flightMotionsRef.current.get(id);
-      if (!activeIds.has(id) && motion && now - motion.seenAt > FLIGHT_RETENTION_MS) {
-        if (followIdRef.current !== id) {
-          ds.entities.remove(entity);
-          flightEntitiesRef.current.delete(id);
-          flightMotionsRef.current.delete(id);
-        }
+      if (!motion || now - motion.seenAt > FLIGHT_RETENTION_MS) {
+        ds.entities.remove(entity);
+        flightEntitiesRef.current.delete(id);
+        flightMotionsRef.current.delete(id);
       }
     }
     viewerRef.current?.scene?.requestRender?.();

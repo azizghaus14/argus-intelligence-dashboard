@@ -120,6 +120,18 @@ function thinFlightsForRender(flights: Flight[], maxN: number, keepId?: string |
   return out;
 }
 
+// Stable 0..1 rank per aircraft (FNV-1a hash of the id). Used to pick a random
+// but consistent subset to show at the zoomed-out overview — random sampling is
+// spatially uniform, so it declutters every region evenly without flicker.
+function flightRank(id: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return ((h >>> 0) % 100000) / 100000;
+}
+
 function flightPositionAt(motion: FlightMotion, now: number) {
   const elapsedMs = Math.max(0, now - motion.blendStartedAt);
   const projectedSeconds = Math.min(180, elapsedMs / 1000);
@@ -186,6 +198,7 @@ export default function CesiumGlobe() {
   const flightEntitiesRef = useRef<Map<string, any>>(new Map());
   const flightMotionsRef = useRef<Map<string, FlightMotion>>(new Map());
   const flightClearanceRef = useRef(0); // shared overview lift, updated once/frame
+  const applyFlightDensityRef = useRef<(() => void) | null>(null); // zoom-aware cull
   const rotateRef = useRef(true);
   const followIdRef = useRef<string | null>(null); // icao24 of tracked flight
   const focusFlightRef = useRef<((id: string) => void) | null>(null);
@@ -662,6 +675,7 @@ export default function CesiumGlobe() {
             else cam.zoomOut(stepH);
           }
           applyGlobeMode(newH > SAT_THRESHOLD);
+          applyFlightDensityRef.current?.(); // progressively reveal/thin by zoom
           if (heightDone && poseSettled) zoomTargetH = null;
           scene.requestRender();
         };
@@ -674,6 +688,7 @@ export default function CesiumGlobe() {
           if (destroyed || viewer.isDestroyed()) return;
           try {
             applyGlobeMode(scene.camera.positionCartographic.height > SAT_THRESHOLD);
+            applyFlightDensityRef.current?.(); // re-thin/reveal flights by zoom
           } catch {
             /* tearing down */
           }
@@ -826,12 +841,11 @@ export default function CesiumGlobe() {
     const color = (h: string, a = 1) => C.Color.fromCssColorString(h).withAlpha(a);
     const now = Date.now();
     const activeIds = new Set<string>();
-    // Render every flight (the feed is already capped server-side). The
-    // zoomed-out "white blob" is solved by shrinking icons to dots via
-    // scaleByDistance, NOT by dropping aircraft — so zooming into a busy hub
-    // still shows all of its traffic. thinFlightsForRender only kicks in as a
-    // safety valve if a future feed returns a huge global set.
-    const rendered = thinFlightsForRender(flights.data.data, 3000, followIdRef.current);
+    // Keep ALL flights as entities (12k safety cap only). Decluttering is done
+    // zoom-aware in applyFlightDensity (below): every flight is shown when you
+    // zoom into a region, but a thinned, evenly-spread subset is shown at the
+    // global overview — so it's clean + fast zoomed out and complete zoomed in.
+    const rendered = thinFlightsForRender(flights.data.data, 12000, followIdRef.current);
     for (const f of rendered) {
       activeIds.add(f.id);
       const tracked = followIdRef.current === f.id;
@@ -916,9 +930,10 @@ export default function CesiumGlobe() {
             scale: 0.9,
           },
         });
+        e._densityRank = flightRank(f.id);
         flightEntitiesRef.current.set(f.id, e);
       }
-      e.show = true;
+      e._active = true; // visibility resolved zoom-aware in applyFlightDensity
       e._flightColor = trackColor;
       e._flightAlpha = f.stale ? 0.6 : 1;
       e.billboard.rotation = C.Math.toRadians(-f.heading);
@@ -947,7 +962,8 @@ export default function CesiumGlobe() {
     }
     for (const [id, entity] of flightEntitiesRef.current) {
       if (activeIds.has(id) || followIdRef.current === id) continue;
-      entity.show = false; // thinned out this pass or gone — hide immediately
+      entity._active = false;
+      entity.show = false; // gone from the feed — hide immediately
       const motion = flightMotionsRef.current.get(id);
       if (!motion || now - motion.seenAt > FLIGHT_RETENTION_MS) {
         ds.entities.remove(entity);
@@ -955,7 +971,27 @@ export default function CesiumGlobe() {
         flightMotionsRef.current.delete(id);
       }
     }
-    viewerRef.current?.scene?.requestRender?.();
+
+    // Zoom-aware density: show every active flight when zoomed into a region;
+    // at the global overview show only an evenly-spread fraction (by stable
+    // rank) so it stays clean + fast. Re-run on every zoom/move (camera ref).
+    const applyDensity = () => {
+      const v = viewerRef.current;
+      if (!v || v.isDestroyed()) return;
+      const h = v.camera.positionCartographic.height;
+      // h < 2.5e6 → show all; ramps down to a 25% floor at the full-globe
+      // overview (always keep some flights visible, just evenly thinned).
+      const fraction =
+        h < 2.5e6 ? 1 : Math.max(0.25, 1 - ((h - 2.5e6) / (1.2e7 - 2.5e6)) * 0.7);
+      for (const [id, entity] of flightEntitiesRef.current) {
+        if (entity._active === false) continue;
+        entity.show =
+          followIdRef.current === id || fraction >= 1 || entity._densityRank < fraction;
+      }
+      v.scene.requestRender();
+    };
+    applyFlightDensityRef.current = applyDensity;
+    applyDensity();
   }, [flights.data, ready]);
 
   // ── Military (ADS-B) ──────────────────────────────────────────────────────
